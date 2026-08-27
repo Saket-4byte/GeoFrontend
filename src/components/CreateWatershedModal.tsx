@@ -184,7 +184,7 @@ export default function CreateWatershedModal({
                 name="name"
                 value={formData.name}
                 onChange={handleChange}
-                placeholder="e.g. Mahanadi Upper Catchment"
+                placeholder="e.g.  Hirakud Watershed"
                 required
                 className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:border-[#0878d1] focus:ring-2 focus:ring-[#0878d1]/10"
               />
