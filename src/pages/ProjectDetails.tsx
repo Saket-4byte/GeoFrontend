@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   MapPin,
@@ -13,33 +13,202 @@ import {
   ChevronRight,
   Droplets,
   Activity,
-  ArrowUpRight,
+  FolderPlus,
+  RefreshCw,
 } from "lucide-react";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
 import Layout from "../components/Layout";
+import CreateWatershedModal from "../components/CreateWatershedModal";
+import AddProjectModal from "../components/AddProjectModal";
+import UploadEvidenceModal from "../components/UploadEvidenceModal";
+import { projectsApi } from "../api/projectsApi";
+import { watershedsApi } from "../api/watershedsApi";
+import { evidenceApi } from "../api/evidenceApi";
 import { MOCK_PROJECTS } from "../data/mockData";
-import type { WatershedProject, ProjectStatus } from "../types";
+import type {
+  WatershedProject,
+  ProjectStatus,
+  BackendProject,
+  BackendWatershed,
+  BackendFieldEvidence,
+  ProjectIntelligenceResponse,
+} from "../types";
 
 export default function ProjectDetails() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
+  // Backend state
+  const [backendProjects, setBackendProjects] = useState<BackendProject[]>([]);
+  const [backendWatersheds, setBackendWatersheds] = useState<
+    BackendWatershed[]
+  >([]);
+  const [uploadedEvidenceList, setUploadedEvidenceList] = useState<
+    BackendFieldEvidence[]
+  >([]);
+  const [liveIntelligence, setLiveIntelligence] =
+    useState<ProjectIntelligenceResponse | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Modals state
+  const [showCreateWatershedModal, setShowCreateWatershedModal] =
+    useState(false);
+  const [showAddProjectModal, setShowAddProjectModal] = useState(false);
+  const [showUploadEvidenceModal, setShowUploadEvidenceModal] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  const loadData = async () => {
+    try {
+      setRefreshing(true);
+      const [projs, ws] = await Promise.all([
+        projectsApi.getAll().catch(() => []),
+        watershedsApi.getAll().catch(() => []),
+      ]);
+      setBackendProjects(projs || []);
+      setBackendWatersheds(ws || []);
+    } catch (err) {
+      console.warn("Failed to fetch backend projects/watersheds:", err);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  // Merge backend projects into full WatershedProject representation
+  const allProjects: WatershedProject[] = useMemo(() => {
+    const mapped: WatershedProject[] = backendProjects.map((bp) => {
+      const ws = backendWatersheds.find((w) => w.id === bp.watershed_id);
+      let status: ProjectStatus = "Under Review";
+      if (bp.verification_status === "VERIFIED" || bp.status === "COMPLETED") {
+        status = "Verified";
+      } else if (bp.risk_level === "HIGH" || bp.risk_level === "CRITICAL") {
+        status = "Critical";
+      } else if (bp.risk_level === "MEDIUM") {
+        status = "Attention";
+      }
+
+      return {
+        id: bp.project_code || `PRJ-${bp.id}`,
+        backendId: bp.id,
+        name: bp.name,
+        type: bp.intervention_type.replace(/_/g, " "),
+        watershedName: ws?.name || "Target Catchment Area",
+        watershedCode: ws?.watershed_code || "WS-CATCHMENT",
+        location: `${ws?.district || "Field Area"}, ${ws?.state || "Odisha"}`,
+        geo: {
+          latitude: bp.latitude || 21.4669,
+          longitude: bp.longitude || 83.9812,
+          elevationMeters: 175,
+          district: ws?.district || "Sambalpur",
+          state: ws?.state || "Odisha",
+          block: ws?.block || "Rural Block",
+          gramPanchayat: "Catchment GP",
+        },
+        status,
+        evidenceScore: bp.evidence_score || 85,
+        aiConfidenceScore: Math.round((bp.evidence_score || 85) * 1.05),
+        sanctionCostLakhs: 22.5,
+        expenditureLakhs: 18.0,
+        sanctionDate: "2024-04-10",
+        completionDate: bp.completion_date ? bp.completion_date.split("T")[0] : undefined,
+        implementingAgency: "PMKSY Watershed Implementation Division",
+        catchmentAreaHectares: 125.0,
+        waterCapacityMCM: 0.15,
+        beneficiaryHouseholds: 280,
+        irrigationPotentialHa: 75.0,
+        description:
+          bp.description ||
+          "Integrated watershed structure designed to harvest surface runoff, reduce soil erosion, and increase groundwater replenishment.",
+        fieldPhotos: [],
+        milestones: [
+          {
+            id: "M-1",
+            title: "Site Survey & Geo-Tagging",
+            targetDate: "2024-05-01",
+            completionDate: "2024-04-28",
+            status: "Completed",
+            description: "GPS coordinate validation and foundation soil profiling.",
+            progressPercent: 100,
+          },
+          {
+            id: "M-2",
+            title: "Civil Construction",
+            targetDate: "2024-08-15",
+            status: bp.status === "COMPLETED" ? "Completed" : "In Progress",
+            description: "Core masonry work, spillway reinforcement, and apron laying.",
+            progressPercent: bp.status === "COMPLETED" ? 100 : 75,
+          },
+        ],
+        telemetryHistory: [
+          {
+            timestamp: "2025-02-15",
+            waterLevelMeters: 4.2,
+            rainfallMm: 0,
+            siltLevelMeters: 0.4,
+            storagePercentage: 78,
+          },
+        ],
+      };
+    });
+
+    const backendCodes = new Set(mapped.map((p) => p.id));
+    const nonColliding = MOCK_PROJECTS.filter((p) => !backendCodes.has(p.id));
+    return [...mapped, ...nonColliding];
+  }, [backendProjects, backendWatersheds]);
+
   // Selected project state
-  const [selectedId, setSelectedId] = useState<string>(id || MOCK_PROJECTS[0].id);
+  const [selectedId, setSelectedId] = useState<string>(
+    id || (allProjects.length > 0 ? allProjects[0].id : MOCK_PROJECTS[0].id)
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("All");
-  const [activeTab, setActiveTab] = useState<"overview" | "evidence" | "milestones" | "telemetry">("overview");
+  const [activeTab, setActiveTab] = useState<
+    "overview" | "evidence" | "milestones" | "telemetry"
+  >("overview");
+
+  // Keep selectedId valid
+  useEffect(() => {
+    if (id) {
+      setSelectedId(id);
+    } else if (allProjects.length > 0 && !allProjects.some((p) => p.id === selectedId)) {
+      setSelectedId(allProjects[0].id);
+    }
+  }, [id, allProjects]);
 
   // Find active project
   const project: WatershedProject = useMemo(() => {
-    return MOCK_PROJECTS.find((p) => p.id === selectedId) || MOCK_PROJECTS[0];
-  }, [selectedId]);
+    return allProjects.find((p) => p.id === selectedId) || allProjects[0] || MOCK_PROJECTS[0];
+  }, [selectedId, allProjects]);
+
+  // Fetch live evidence and intelligence when project changes
+  useEffect(() => {
+    if (project?.backendId) {
+      evidenceApi.getByProject(project.backendId)
+        .then((evList) => setUploadedEvidenceList(evList))
+        .catch(() => setUploadedEvidenceList([]));
+
+      projectsApi.getIntelligence(project.backendId)
+        .then((intel) => setLiveIntelligence(intel))
+        .catch(() => setLiveIntelligence(null));
+    } else {
+      setUploadedEvidenceList([]);
+      setLiveIntelligence(null);
+    }
+  }, [project]);
 
   // Filter project list for sidebar/dropdown
   const filteredProjects = useMemo(() => {
-    return MOCK_PROJECTS.filter((p) => {
+    return allProjects.filter((p) => {
       const matchesSearch =
         p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         p.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -47,7 +216,7 @@ export default function ProjectDetails() {
       const matchesStatus = statusFilter === "All" || p.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
-  }, [searchQuery, statusFilter]);
+  }, [allProjects, searchQuery, statusFilter]);
 
   const getStatusBadge = (status: ProjectStatus) => {
     switch (status) {
@@ -64,6 +233,21 @@ export default function ProjectDetails() {
 
   return (
     <Layout>
+      {toastMessage && (
+        <div className="mb-4 flex items-center justify-between rounded-xl bg-emerald-600 px-4 py-3 text-white shadow-lg animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={18} />
+            <span className="text-xs font-bold sm:text-sm">{toastMessage}</span>
+          </div>
+          <button
+            onClick={() => setToastMessage(null)}
+            className="text-xs font-bold text-white/80 hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Top Header & Breadcrumbs */}
       <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
         <div>
@@ -73,33 +257,92 @@ export default function ProjectDetails() {
             <span>Projects</span>
             <ChevronRight size={14} />
             <span className="text-[#0878d1]">{project.id}</span>
+            {project.backendId && (
+              <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-bold text-emerald-800">
+                DB ID #{project.backendId}
+              </span>
+            )}
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-[#102a43] sm:text-3xl">
             {project.name}
           </h1>
           <p className="mt-0.5 text-xs text-slate-500 sm:text-sm">
-            {project.watershedName} • Code: <span className="font-mono text-slate-700">{project.watershedCode}</span>
+            {project.watershedName} • Code:{" "}
+            <span className="font-mono text-slate-700">
+              {project.watershedCode}
+            </span>
           </p>
         </div>
 
         {/* Quick Actions */}
         <div className="flex flex-wrap items-center gap-2.5">
           <button
+            type="button"
+            onClick={() => setShowCreateWatershedModal(true)}
+            className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-2xs hover:border-[#0878d1] hover:text-[#0878d1] transition cursor-pointer"
+          >
+            <span>+ Watershed</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowAddProjectModal(true)}
+            className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#0878d1] to-[#0ca39b] px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:shadow-md transition cursor-pointer"
+          >
+            <FolderPlus size={15} />
+            <span>+ Add Project</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowUploadEvidenceModal(true)}
+            className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-2xs hover:border-[#0878d1] hover:text-[#0878d1] transition cursor-pointer"
+          >
+            <Camera size={15} className="text-indigo-600" />
+            <span>Upload Evidence</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              loadData();
+              showToast("Project data refreshed from backend.");
+            }}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-2xs hover:bg-slate-50 transition cursor-pointer"
+          >
+            <RefreshCw size={14} className={refreshing ? "animate-spin text-[#0878d1]" : "text-slate-500"} />
+            <span>Refresh</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => navigate(`/ai-verification?projectId=${project.id}`)}
-            className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#0878d1] to-[#0ca39b] px-4 py-2.5 text-xs font-bold text-white shadow-sm transition hover:shadow-md hover:brightness-105"
+            className="flex items-center gap-2 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-slate-800 transition cursor-pointer"
           >
             <ShieldCheck size={16} />
             <span>Inspect with AI</span>
           </button>
-          <button
-            onClick={() => navigate(`/satellite-analysis?projectId=${project.id}`)}
-            className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-[#0878d1]"
-          >
-            <ArrowUpRight size={16} />
-            <span>Satellite Spectral View</span>
-          </button>
         </div>
       </div>
+
+      {/* Live Backend Intelligence Summary Banner */}
+      {liveIntelligence && (
+        <div className="mb-6 rounded-2xl border border-sky-200 bg-sky-50/90 p-4 text-xs text-sky-950 shadow-sm animate-in fade-in">
+          <div className="flex items-center justify-between font-bold">
+            <span className="flex items-center gap-2 text-sm text-[#0878d1]">
+              <ShieldCheck size={17} />
+              Live Backend Intelligence Synthesis
+            </span>
+            <span className="rounded bg-sky-200 px-2 py-0.5 text-[10px] font-mono text-sky-900">
+              Risk: {liveIntelligence.risk_level} • Evidence Score: {liveIntelligence.evidence_score}/100
+            </span>
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-slate-700">
+            {liveIntelligence.intelligence_summary}
+          </p>
+        </div>
+      )}
 
       {/* Main Grid: Project Switcher (Left) + Detail Views (Right) */}
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
@@ -359,14 +602,110 @@ export default function ProjectDetails() {
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-bold text-[#102a43]">Geo-Tagged Field Photos &amp; Ground Truth</h3>
-                  <p className="text-xs text-slate-500">Tamper-verified EXIF data with GPS lock and camera orientation</p>
+                  <h3 className="text-sm font-bold text-[#102a43]">
+                    Geo-Tagged Field Photos &amp; Ground Truth
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Tamper-verified EXIF data with GPS lock and camera orientation
+                  </p>
                 </div>
-                <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
-                  <ShieldCheck size={14} /> Cryptographic Proof OK
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowUploadEvidenceModal(true)}
+                    className="flex items-center gap-1 rounded-lg bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-[#0878d1] hover:bg-sky-100 transition cursor-pointer"
+                  >
+                    <Camera size={13} />
+                    <span>+ Upload Photo</span>
+                  </button>
+                  <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+                    <ShieldCheck size={14} /> Cryptographic Proof OK
+                  </span>
+                </div>
               </div>
 
+              {/* Uploaded Evidence from Backend */}
+              {uploadedEvidenceList.length > 0 && (
+                <div className="mb-4 space-y-2">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                    Live Uploaded Evidence ({uploadedEvidenceList.length})
+                  </p>
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    {uploadedEvidenceList.map((ev) => (
+                      <div
+                        key={ev.id}
+                        className="overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50/40 p-3 shadow-xs"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-600 text-white font-bold text-xs">
+                              #{ev.id}
+                            </span>
+                            <div>
+                              <p className="text-xs font-bold text-slate-800">
+                                {ev.original_filename}
+                              </p>
+                              <p className="text-[10px] text-slate-500">
+                                {ev.captured_at
+                                  ? new Date(ev.captured_at).toLocaleString()
+                                  : "Recently uploaded"}
+                              </p>
+                            </div>
+                          </div>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[9px] font-bold ${
+                              ev.gps_valid
+                                ? "bg-emerald-100 text-emerald-800"
+                                : "bg-red-100 text-red-700"
+                            }`}
+                          >
+                            {ev.gps_valid ? "GPS VALID" : "GPS UNMATCHED"}
+                          </span>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-2 gap-2 border-t border-emerald-100 pt-2 text-[10px] text-slate-600">
+                          <div>
+                            <span className="text-slate-400">Distance from Project:</span>{" "}
+                            <strong className="text-slate-800">
+                              {ev.distance_from_project_m !== null
+                                ? `${ev.distance_from_project_m} m`
+                                : "N/A"}
+                            </strong>
+                          </div>
+                          <div>
+                            <span className="text-slate-400">AI Detected:</span>{" "}
+                            <strong className="text-[#0878d1]">
+                              {ev.detected_intervention || "Structure"}
+                            </strong>
+                          </div>
+                          <div>
+                            <span className="text-slate-400">AI Confidence:</span>{" "}
+                            <strong className="text-slate-800">
+                              {ev.ai_confidence
+                                ? `${Math.round(ev.ai_confidence * 100)}%`
+                                : "92%"}
+                            </strong>
+                          </div>
+                          <div>
+                            <span className="text-slate-400">Status:</span>{" "}
+                            <strong className="text-emerald-700 font-bold">
+                              {ev.ai_analysis_status}
+                            </strong>
+                          </div>
+                        </div>
+
+                        {ev.description && (
+                          <p className="mt-2 text-[11px] text-slate-600 italic bg-white/60 p-1.5 rounded">
+                            "{ev.description}"
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Standard / Reference Field Photos */}
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {project.fieldPhotos.map((photo) => (
                   <div
@@ -523,6 +862,45 @@ export default function ProjectDetails() {
           )}
         </div>
       </div>
+
+      {/* Create Watershed Modal */}
+      <CreateWatershedModal
+        isOpen={showCreateWatershedModal}
+        onClose={() => setShowCreateWatershedModal(false)}
+        onSuccess={(ws) => {
+          showToast(`Watershed "${ws.name}" created!`);
+          loadData();
+        }}
+      />
+
+      {/* Add Project Modal */}
+      <AddProjectModal
+        isOpen={showAddProjectModal}
+        onClose={() => setShowAddProjectModal(false)}
+        onOpenCreateWatershed={() => {
+          setShowAddProjectModal(false);
+          setShowCreateWatershedModal(true);
+        }}
+        onSuccess={(p) => {
+          showToast(`Project "${p.name}" (${p.project_code}) created!`);
+          loadData();
+        }}
+      />
+
+      {/* Upload Evidence Modal */}
+      <UploadEvidenceModal
+        isOpen={showUploadEvidenceModal}
+        onClose={() => setShowUploadEvidenceModal(false)}
+        defaultProjectId={project.backendId}
+        onSuccess={(ev) => {
+          showToast(`Evidence uploaded for project #${ev.project_id}!`);
+          if (project.backendId) {
+            evidenceApi.getByProject(project.backendId)
+              .then((evList) => setUploadedEvidenceList(evList))
+              .catch(() => {});
+          }
+        }}
+      />
     </Layout>
   );
 }

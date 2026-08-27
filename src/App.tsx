@@ -10,6 +10,9 @@ import ProjectDetails from "./pages/ProjectDetails";
 import AIVerification from "./pages/AIVerification";
 import SatelliteAnalysis from "./pages/SatelliteAnalysis";
 import ImpactAnalysis from "./pages/ImpactAnalysis";
+import FieldEvidence from "./pages/FieldEvidence";
+import ReportsAndAlerts from "./pages/ReportsAndAlerts";
+import ExportData from "./pages/ExportData";
 
 function App() {
   return (
@@ -31,7 +34,7 @@ function App() {
           element={<Dashboard />}
         />
 
-        {/* 4 New Watershed Intelligence Pages */}
+        {/* Watershed Intelligence Pages */}
         <Route
           path="/projects"
           element={<ProjectDetails />}
@@ -43,6 +46,11 @@ function App() {
         <Route
           path="/watersheds"
           element={<ProjectDetails />}
+        />
+
+        <Route
+          path="/field-evidence"
+          element={<FieldEvidence />}
         />
 
         <Route
@@ -62,6 +70,20 @@ function App() {
         <Route
           path="/impact-reports"
           element={<ImpactAnalysis />}
+        />
+
+        <Route
+          path="/reports"
+          element={<ReportsAndAlerts />}
+        />
+        <Route
+          path="/alerts"
+          element={<ReportsAndAlerts />}
+        />
+
+        <Route
+          path="/export-data"
+          element={<ExportData />}
         />
 
       </Routes>

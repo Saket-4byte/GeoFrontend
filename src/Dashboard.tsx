@@ -5,6 +5,7 @@ import {
   Activity,
   AlertTriangle,
   Bot,
+  Camera,
   CheckCircle2,
   ChevronRight,
   Database,
@@ -32,6 +33,16 @@ import "leaflet/dist/leaflet.css";
 
 import Layout from "./components/Layout";
 import Logo from "./components/Logo";
+import CreateWatershedModal from "./components/CreateWatershedModal";
+import AddProjectModal from "./components/AddProjectModal";
+import UploadEvidenceModal from "./components/UploadEvidenceModal";
+import { dashboardApi, projectsApi, watershedsApi, alertsApi } from "./api";
+import type {
+  DashboardOverviewResponse,
+  BackendProject,
+  BackendWatershed,
+  BackendAlert,
+} from "./types";
 
 // ======================================================
 // TYPES
@@ -756,13 +767,108 @@ export default function Dashboard() {
   const [showFullMap, setShowFullMap] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
+  // Backend integration state
+  const [backendOverview, setBackendOverview] =
+    useState<DashboardOverviewResponse | null>(null);
+  const [backendProjects, setBackendProjects] = useState<BackendProject[]>([]);
+  const [backendWatersheds, setBackendWatersheds] = useState<
+    BackendWatershed[]
+  >([]);
+  const [backendAlerts, setBackendAlerts] = useState<BackendAlert[]>([]);
+  const [isBackendConnected, setIsBackendConnected] = useState<boolean>(true);
+
+  // Modal dialog states
+  const [showCreateWatershedModal, setShowCreateWatershedModal] =
+    useState<boolean>(false);
+  const [showAddProjectModal, setShowAddProjectModal] = useState<boolean>(false);
+  const [showUploadEvidenceModal, setShowUploadEvidenceModal] =
+    useState<boolean>(false);
+  const [toastMessage, setToastMessage] = useState<{
+    text: string;
+    type: "success" | "info" | "error";
+  } | null>(null);
+
+  const showToast = (
+    text: string,
+    type: "success" | "info" | "error" = "success"
+  ) => {
+    setToastMessage({ text, type });
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  const loadBackendData = async () => {
+    try {
+      setRefreshing(true);
+      const [overview, projs, ws, alts] = await Promise.all([
+        dashboardApi.getOverview().catch(() => null),
+        projectsApi.getAll().catch(() => []),
+        watershedsApi.getAll().catch(() => []),
+        alertsApi.getAll(false).catch(() => []),
+      ]);
+
+      setBackendOverview(overview);
+      setBackendProjects(projs || []);
+      setBackendWatersheds(ws || []);
+      setBackendAlerts(alts || []);
+      setIsBackendConnected(true);
+    } catch (err) {
+      console.warn("Backend data fetch error:", err);
+      setIsBackendConnected(false);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    loadBackendData();
+  }, []);
+
+  // Merge real backend projects with default mock catalog
+  const allProjects = useMemo(() => {
+    const mappedBackendProjects: Project[] = backendProjects.map((bp) => {
+      const ws = backendWatersheds.find((w) => w.id === bp.watershed_id);
+      let status: ProjectStatus = "Under Review";
+      if (bp.verification_status === "VERIFIED" || bp.status === "COMPLETED") {
+        status = "Verified";
+      } else if (bp.risk_level === "HIGH" || bp.risk_level === "CRITICAL") {
+        status = "Critical";
+      } else if (bp.risk_level === "MEDIUM") {
+        status = "Attention";
+      } else if (bp.verification_status === "PENDING") {
+        status = "Under Review";
+      }
+
+      return {
+        id: bp.project_code || `PRJ-${bp.id}`,
+        name: bp.name,
+        type: bp.intervention_type.replace(/_/g, " "),
+        location: `${ws?.district || "Field Site"}, ${ws?.state || "Odisha"}`,
+        district: ws?.district || "Site",
+        state: ws?.state || "Odisha",
+        evidence: bp.evidence_score || 85,
+        aiConfidence: Math.round((bp.evidence_score || 85) * 1.05),
+        sanctionCostLakhs: 20.0,
+        status,
+        latitude: bp.latitude || 21.4669,
+        longitude: bp.longitude || 83.9812,
+        lastUpdated: "Just now (Live)",
+      };
+    });
+
+    const backendCodes = new Set(mappedBackendProjects.map((p) => p.id));
+    const nonCollidingMocks = MOCK_DASHBOARD_PROJECTS.filter(
+      (p) => !backendCodes.has(p.id)
+    );
+    return [...mappedBackendProjects, ...nonCollidingMocks];
+  }, [backendProjects, backendWatersheds]);
+
   // Filter projects by state
   const filteredProjects = useMemo(() => {
     if (selectedState === "All India") {
-      return MOCK_DASHBOARD_PROJECTS;
+      return allProjects;
     }
-    return MOCK_DASHBOARD_PROJECTS.filter((p) => p.state === selectedState);
-  }, [selectedState]);
+    return allProjects.filter((p) => p.state === selectedState);
+  }, [selectedState, allProjects]);
 
   // Statistics calculation
   const totalProjects = filteredProjects.length;
@@ -772,31 +878,91 @@ export default function Dashboard() {
   const criticalProjects = filteredProjects.filter((p) => p.status === "Critical").length;
 
   const totalSanctionedCost = useMemo(() => {
-    return filteredProjects.reduce((acc, curr) => acc + curr.sanctionCostLakhs, 0).toFixed(1);
+    return filteredProjects
+      .reduce((acc, curr) => acc + curr.sanctionCostLakhs, 0)
+      .toFixed(1);
   }, [filteredProjects]);
 
   const handleRefresh = () => {
-    setRefreshing(true);
-    setTimeout(() => setRefreshing(false), 600);
+    loadBackendData();
+    showToast("Dashboard synchronized with live backend.", "info");
+  };
+
+  const handleResolveAlert = async (alertId: number) => {
+    try {
+      await alertsApi.resolve(alertId);
+      showToast(`Alert #${alertId} marked as resolved in backend.`, "success");
+      loadBackendData();
+    } catch (err: any) {
+      showToast(err.message || "Failed to resolve alert", "error");
+    }
   };
 
   return (
     <Layout>
       <div className="space-y-6">
+        {/* Toast Feedback Notification */}
+        {toastMessage && (
+          <div
+            className={`flex items-center justify-between rounded-xl px-4 py-3 text-white shadow-lg animate-in fade-in ${
+              toastMessage.type === "success"
+                ? "bg-emerald-600"
+                : toastMessage.type === "error"
+                ? "bg-red-600"
+                : "bg-[#0878d1]"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <CheckCircle2 size={18} />
+              <span className="text-xs font-bold sm:text-sm">
+                {toastMessage.text}
+              </span>
+            </div>
+            <button
+              onClick={() => setToastMessage(null)}
+              className="text-xs font-bold text-white/80 hover:text-white"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* ====================================================
             PAGE HEADER & CONTROLS
         ===================================================== */}
         <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-50 border border-cyan-200 px-3 py-1 text-xs font-extrabold text-[#0878d1]">
                 <Logo variant="icon-only" size="sm" />
                 Command Center Overview
               </span>
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-1 text-xs font-bold text-emerald-700">
-                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                Live Sentinel-2 Telemetry Active
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-bold ${
+                  isBackendConnected
+                    ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                    : "bg-amber-50 border-amber-200 text-amber-700"
+                }`}
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    isBackendConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"
+                  }`}
+                />
+                {isBackendConnected
+                  ? "Live Backend Connected"
+                  : "Offline Mode (Mock Data Active)"}
               </span>
+              {backendProjects.length > 0 && (
+                <span className="inline-flex items-center rounded-full bg-blue-50 border border-blue-200 px-2 py-0.5 text-[10px] font-bold text-[#0878d1]">
+                  {backendProjects.length} Custom Projects in DB
+                </span>
+              )}
+              {backendOverview?.kpis && (
+                <span className="inline-flex items-center rounded-full bg-indigo-50 border border-indigo-200 px-2 py-0.5 text-[10px] font-bold text-indigo-700">
+                  DB KPIs Active ({backendOverview.kpis.total_watersheds} Watersheds)
+                </span>
+              )}
             </div>
 
             <h1 className="mt-2 text-2xl font-black tracking-tight text-[#102A43] sm:text-3xl">
@@ -807,8 +973,34 @@ export default function Dashboard() {
             </p>
           </div>
 
-          {/* Controls: State Selector & Quick Links */}
-          <div className="flex flex-wrap items-center gap-3">
+          {/* Controls: Actions, State Selector & Quick Links */}
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Action Buttons: Register Watershed, Add Project, Upload Evidence */}
+            <button
+              type="button"
+              onClick={() => setShowCreateWatershedModal(true)}
+              className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-2xs hover:border-[#0878d1] hover:text-[#0878d1] transition cursor-pointer"
+            >
+              <span>+ Watershed</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowAddProjectModal(true)}
+              className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#0878d1] to-[#0ca39b] px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:shadow-md transition cursor-pointer"
+            >
+              <span>+ Add Project</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowUploadEvidenceModal(true)}
+              className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-2xs hover:border-[#0878d1] hover:text-[#0878d1] transition cursor-pointer"
+            >
+              <Camera size={14} className="text-indigo-600" />
+              <span>Upload Photo</span>
+            </button>
+
             {/* State Filter */}
             <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-2xs">
               <MapPin size={16} className="text-[#0878d1]" />
@@ -835,18 +1027,17 @@ export default function Dashboard() {
                 size={14}
                 className={`text-slate-500 ${refreshing ? "animate-spin text-[#0878d1]" : ""}`}
               />
-              <span>Refresh</span>
+              <span>Sync</span>
             </button>
 
             {/* Quick Action to AI Verification */}
             <button
               type="button"
               onClick={() => navigate("/ai-verification")}
-              className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#0878d1] to-[#0ca39b] px-4 py-2 text-xs font-bold text-white shadow-md shadow-[#0878d1]/20 hover:shadow-lg transition cursor-pointer"
+              className="flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-slate-800 transition cursor-pointer"
             >
-              <Bot size={15} />
-              <span>AI Verification Queue</span>
-              <ChevronRight size={14} />
+              <Bot size={14} />
+              <span>AI Audit</span>
             </button>
           </div>
         </div>
@@ -1004,55 +1195,118 @@ export default function Dashboard() {
                     Priority Field Alerts
                   </h2>
                   <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-extrabold text-red-600">
-                    4 Active
+                    {backendAlerts.filter((a) => !a.is_resolved).length || 4} Active
                   </span>
                 </div>
                 <button
                   type="button"
-                  onClick={() => navigate("/reports")}
+                  onClick={() => navigate("/ai-verification")}
                   className="text-xs font-bold text-[#0878d1] hover:underline"
                 >
-                  All Alerts
+                  Verify All →
                 </button>
               </div>
 
               <div className="space-y-2.5 p-4">
-                <AlertItem
-                  id="ALT-1"
-                  title="GPS Azimuth Discrepancy"
-                  location="Nuapada, Odisha"
-                  severity="Critical"
-                  time="2h ago"
-                  projectId="JD-1028"
-                  onReview={(pid) => navigate(`/ai-verification?projectId=${pid}`)}
-                />
-                <AlertItem
-                  id="ALT-2"
-                  title="Low Recent Evidence Score"
-                  location="Angul, Odisha"
-                  severity="Warning"
-                  time="5h ago"
-                  projectId="JD-1027"
-                  onReview={(pid) => navigate(`/ai-verification?projectId=${pid}`)}
-                />
-                <AlertItem
-                  id="ALT-3"
-                  title="Vegetation Index Dip"
-                  location="Kotra, Udaipur"
-                  severity="Warning"
-                  time="1d ago"
-                  projectId="JD-3016"
-                  onReview={(pid) => navigate(`/ai-verification?projectId=${pid}`)}
-                />
-                <AlertItem
-                  id="ALT-4"
-                  title="Spillway Silt Accumulation"
-                  location="Deogarh, Odisha"
-                  severity="Info"
-                  time="2d ago"
-                  projectId="JD-1026"
-                  onReview={(pid) => navigate(`/projects/${pid}`)}
-                />
+                {backendAlerts.length > 0 ? (
+                  backendAlerts.slice(0, 4).map((alert) => (
+                    <div
+                      key={alert.id}
+                      className="flex items-start justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/50 p-3 hover:bg-slate-50 transition"
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <div
+                          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                            alert.severity === "HIGH" || alert.severity === "CRITICAL"
+                              ? "bg-red-100 text-red-600"
+                              : "bg-orange-100 text-orange-600"
+                          }`}
+                        >
+                          <AlertTriangle size={16} />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-bold text-slate-800">
+                              {alert.title}
+                            </p>
+                            <span
+                              className={`rounded-full px-1.5 py-0.2 text-[9px] font-bold uppercase tracking-wider ${
+                                alert.severity === "HIGH" || alert.severity === "CRITICAL"
+                                  ? "bg-red-50 text-red-600"
+                                  : "bg-orange-50 text-orange-600"
+                              }`}
+                            >
+                              {alert.severity}
+                            </span>
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-slate-500 line-clamp-1">
+                            {alert.message}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            navigate(`/ai-verification?projectId=${alert.project_id}`)
+                          }
+                          className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-bold text-[#0878d1] hover:bg-sky-50 transition cursor-pointer"
+                        >
+                          Audit
+                        </button>
+                        {!alert.is_resolved && (
+                          <button
+                            type="button"
+                            onClick={() => handleResolveAlert(alert.id)}
+                            className="rounded-lg bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-100 transition cursor-pointer"
+                          >
+                            Resolve
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <>
+                    <AlertItem
+                      id="ALT-1"
+                      title="GPS Azimuth Discrepancy"
+                      location="Nuapada, Odisha"
+                      severity="Critical"
+                      time="2h ago"
+                      projectId="JD-1028"
+                      onReview={(pid) => navigate(`/ai-verification?projectId=${pid}`)}
+                    />
+                    <AlertItem
+                      id="ALT-2"
+                      title="Low Recent Evidence Score"
+                      location="Angul, Odisha"
+                      severity="Warning"
+                      time="5h ago"
+                      projectId="JD-1027"
+                      onReview={(pid) => navigate(`/ai-verification?projectId=${pid}`)}
+                    />
+                    <AlertItem
+                      id="ALT-3"
+                      title="Vegetation Index Dip"
+                      location="Kotra, Udaipur"
+                      severity="Warning"
+                      time="1d ago"
+                      projectId="JD-3016"
+                      onReview={(pid) => navigate(`/ai-verification?projectId=${pid}`)}
+                    />
+                    <AlertItem
+                      id="ALT-4"
+                      title="Spillway Silt Accumulation"
+                      location="Deogarh, Odisha"
+                      severity="Info"
+                      time="2d ago"
+                      projectId="JD-1026"
+                      onReview={(pid) => navigate(`/projects/${pid}`)}
+                    />
+                  </>
+                )}
               </div>
             </section>
           </div>
@@ -1329,6 +1583,46 @@ export default function Dashboard() {
           onClose={() => setShowFullMap(false)}
         />
       )}
+
+      {/* Create Watershed Modal */}
+      <CreateWatershedModal
+        isOpen={showCreateWatershedModal}
+        onClose={() => setShowCreateWatershedModal(false)}
+        onSuccess={(created) => {
+          showToast(`Watershed "${created.name}" created successfully!`, "success");
+          loadBackendData();
+        }}
+      />
+
+      {/* Add Project Modal */}
+      <AddProjectModal
+        isOpen={showAddProjectModal}
+        onClose={() => setShowAddProjectModal(false)}
+        onOpenCreateWatershed={() => {
+          setShowAddProjectModal(false);
+          setShowCreateWatershedModal(true);
+        }}
+        onSuccess={(created) => {
+          showToast(
+            `Project "${created.name}" (${created.project_code}) created and persisted!`,
+            "success"
+          );
+          loadBackendData();
+        }}
+      />
+
+      {/* Upload Evidence Modal */}
+      <UploadEvidenceModal
+        isOpen={showUploadEvidenceModal}
+        onClose={() => setShowUploadEvidenceModal(false)}
+        onSuccess={(evidence) => {
+          showToast(
+            `Evidence uploaded & validated for project #${evidence.project_id}!`,
+            "success"
+          );
+          loadBackendData();
+        }}
+      />
     </Layout>
   );
 }

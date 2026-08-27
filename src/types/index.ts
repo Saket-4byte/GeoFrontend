@@ -8,7 +8,7 @@
 
 export type ProjectStatus = "PLANNED" | "IN_PROGRESS" | "COMPLETED" | "Verified" | "Under Review" | "Attention" | "Critical";
 
-export type VerificationStatus = "VERIFIED" | "NEEDS_REVIEW" | "FIELD_INSPECTION_REQUIRED" | "PENDING" | "AI Verified" | "Flagged Anomaly" | "Rejected";
+export type VerificationStatus = "VERIFIED" | "NEEDS_REVIEW" | "FIELD_INSPECTION_REQUIRED" | "PENDING" | "AI Verified" | "Pending Review" | "Flagged Anomaly" | "Rejected";
 
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
@@ -197,6 +197,8 @@ export interface SatelliteAnalysisCreateInput {
   water_after?: number | null;
 }
 
+export type SatelliteAnalysisResponse = BackendSatelliteAnalysis;
+
 // ------------------------------------------------------
 // VERIFICATION SCHEMAS
 // ------------------------------------------------------
@@ -226,6 +228,8 @@ export interface BackendVerification {
   } | null;
   created_at: string;
 }
+
+export type VerificationResponse = BackendVerification;
 
 // ------------------------------------------------------
 // ALERTS SCHEMAS

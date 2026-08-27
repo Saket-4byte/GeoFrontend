@@ -7,7 +7,7 @@ import type {
 export const satelliteApi = {
   analyzeProject: async (
     projectId: number,
-    data: SatelliteAnalysisCreateInput
+    data: SatelliteAnalysisCreateInput = {}
   ): Promise<BackendSatelliteAnalysis> => {
     return request<BackendSatelliteAnalysis>(`/satellite/project/${projectId}/analyze`, {
       method: "POST",
